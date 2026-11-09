@@ -4,6 +4,8 @@ Use an Xbox (or any gamepad) as a mouse and keyboard for your whole
 [Omarchy](https://omarchy.org) desktop. Sit back on the couch, browse, switch windows,
 type with an on-screen keyboard, and remap every button from a compact bar panel.
 
+![Controller panel](preview.png)
+
 ## Features
 
 - **Sticks as mouse and scroll** (swap or turn off), with an adjustable dead zone and speed
