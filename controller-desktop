@@ -1,0 +1,460 @@
+#!/usr/bin/python3
+"""Control the whole Omarchy desktop with a game controller.
+
+Reads every real gamepad via evdev (hotplug aware, never grabs it, so games and
+Steam keep working) and emits mouse + keyboard events through uinput.
+The Guide/Xbox button opens a configurable menu (config "menu").
+
+Settings live in ~/.config/controller-desktop/config.json (the bar panel edits
+it; the file is re-read within a second of every save). Anything missing falls
+back to defaults.json. Available actions are listed in actions.json; a binding
+may also be "cmd:<shell command>". Custom actions made in the panel are
+stored under "custom_actions" and menu entries under "menu".
+
+Pauses itself while a game / Steam Big Picture window is focused, and can be
+toggled by hand by holding Start + Select for one second.
+LT held = second layer of bindings, RT held = slow, precise cursor.
+"""
+import asyncio
+import copy
+import json
+import os
+import re
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+from evdev import InputDevice, UInput, ecodes as e, list_devices
+
+HERE = Path(__file__).resolve().parent
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "controller-desktop" / "config.json"
+STATE = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "controller-desktop" / "state.json"
+ACTIONS = json.loads((HERE / "actions.json").read_text())
+DEFAULTS = json.loads((HERE / "defaults.json").read_text())
+
+TICK = 1 / 120
+SLOW_FACTOR = 0.25
+PAUSE_CLASS = re.compile(r"^(steam_app_.*|gamescope.*)$", re.I)
+PAUSE_TITLE = re.compile(r"big picture", re.I)
+
+BUTTONS = {
+    "a": e.BTN_SOUTH, "b": e.BTN_EAST,
+    "x": e.BTN_NORTH, "y": e.BTN_WEST,  # Linux names the Xbox X/Y buttons BTN_X=NORTH, BTN_Y=WEST
+    "lb": e.BTN_TL, "rb": e.BTN_TR,
+    "l3": e.BTN_THUMBL, "r3": e.BTN_THUMBR,
+    "start": e.BTN_START, "select": e.BTN_SELECT,
+    "guide": e.BTN_MODE,  # Xbox logo
+}
+CODE_TO_NAME = {v: k for k, v in BUTTONS.items()}
+DEFERRED = {"start", "select"}  # fire on release so Start+Select can mean "toggle"
+DPAD = {(e.ABS_HAT0X, -1): "left", (e.ABS_HAT0X, 1): "right", (e.ABS_HAT0Y, -1): "up", (e.ABS_HAT0Y, 1): "down"}
+
+kbd = UInput({e.EV_KEY: list(range(1, 249))}, name="controller-desktop keyboard")
+mouse = UInput(
+    {
+        e.EV_KEY: [e.BTN_LEFT, e.BTN_RIGHT, e.BTN_MIDDLE],
+        e.EV_REL: [e.REL_X, e.REL_Y, e.REL_WHEEL, e.REL_HWHEEL, e.REL_WHEEL_HI_RES, e.REL_HWHEEL_HI_RES],
+    },
+    name="controller-desktop mouse",
+)
+
+cfg = copy.deepcopy(DEFAULTS)
+cfg_mtime = None
+enabled = True
+paused = False
+pads = {}  # event path -> Pad
+skipped = set()  # event paths known not to be gamepads
+menu_proc = None  # running controller menu (omarchy-menu-select), if any
+MENU_KEYS = {"up": e.KEY_UP, "down": e.KEY_DOWN, "left": e.KEY_LEFT, "right": e.KEY_RIGHT,
+             "a": e.KEY_ENTER, "b": e.KEY_ESC}
+
+
+# ---------------------------------------------------------------- config ----
+def merge(base, over):
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            merge(base[k], v)
+        elif k in base or k == "bindings":
+            base[k] = v
+    return base
+
+
+def load_config():
+    """Re-read config.json when it changed. Bad files are ignored, not fatal."""
+    global cfg, cfg_mtime, enabled
+    try:
+        mtime = CONFIG.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    if mtime == cfg_mtime:
+        return
+    cfg_mtime = mtime
+    new = copy.deepcopy(DEFAULTS)
+    if mtime is not None:
+        try:
+            merge(new, json.loads(CONFIG.read_text()))
+        except (OSError, ValueError):
+            notify("config.json is not valid JSON, keeping defaults")
+    cfg = new
+    enabled = bool(cfg.get("enabled", True))
+    for pad in pads.values():
+        pad.release_all()
+    write_state()
+
+
+def write_state():
+    try:
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(json.dumps({
+            "enabled": enabled, "paused": paused,
+            "pads": [p.dev.name for p in pads.values() if p],
+        }))
+    except OSError:
+        pass
+
+
+def binding(name, slot):
+    return str((cfg.get("bindings", {}).get(name) or {}).get(slot) or "none")
+
+
+# --------------------------------------------------------------- actions ----
+def notify(msg):
+    subprocess.Popen(["notify-send", "-t", "2000", "Controller", msg], stderr=subprocess.DEVNULL)
+
+
+def run(command):
+    subprocess.Popen(command, shell=isinstance(command, str), start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def resolve(action):
+    """-> ('keys', [codes]) | ('mouse', code) | ('run', cmd) | None"""
+    if action.startswith("cmd:"):
+        return ("run", action[4:])
+    spec = ACTIONS.get(action)
+    if not spec or action == "none":
+        return None
+    if spec.get("menu"):
+        return ("menu", None)
+    if "mouse" in spec:
+        return ("mouse", getattr(e, spec["mouse"]))
+    if "keys" in spec:
+        return ("keys", [getattr(e, "KEY_" + k) for k in spec["keys"]])
+    if "run" in spec:
+        return ("run", [a.replace("{here}", str(HERE)) for a in spec["run"]])
+    return None
+
+
+def fire(action, down):
+    what = resolve(action)
+    if not what:
+        return
+    kind, arg = what
+    if kind == "mouse":
+        mouse.write(e.EV_KEY, arg, int(down))
+        mouse.syn()
+    elif kind == "keys":
+        for code in arg if down else reversed(arg):
+            kbd.write(e.EV_KEY, code, int(down))
+        kbd.syn()
+    elif kind == "run" and down:
+        run(arg)
+    elif kind == "menu" and down:
+        open_menu()
+
+
+def menu_open():
+    return menu_proc is not None and menu_proc.poll() is None
+
+
+def open_menu():
+    """Show the Xbox-button menu. While it is open the D-pad / A / B drive it."""
+    global menu_proc
+    if menu_open():
+        menu_proc.terminate()
+        return
+    items = [m for m in cfg.get("menu", []) if isinstance(m, dict) and m.get("label") and m.get("cmd")]
+    if not items:
+        notify("The controller menu is empty. Add entries in the panel.")
+        return
+    labels = [m["label"] for m in items]
+    menu_proc = subprocess.Popen(["omarchy-menu-select", "Controller menu", *labels],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 text=True, start_new_session=True)
+    threading.Thread(target=menu_wait, args=(menu_proc, items), daemon=True).start()
+
+
+def menu_wait(proc, items):
+    out = proc.communicate()[0].strip()
+    for m in items:
+        if m["label"] == out:
+            run(m["cmd"])
+            break
+
+
+def tap(action):
+    fire(action, True)
+    fire(action, False)
+
+
+# ------------------------------------------------------------------- pad ----
+class Pad:
+    def __init__(self, dev):
+        caps = dev.capabilities()
+        self.dev = dev
+        self.has_tl2 = e.BTN_TL2 in caps.get(e.EV_KEY, [])
+        self.ranges = {code: (info.min, info.max) for code, info in caps.get(e.EV_ABS, [])}
+        self.axes = {}
+        self.held = {}  # button name -> action currently pressed
+        self.pending = {}  # button name -> press time, waiting for tap/hold decision
+        self.consumed = set()  # buttons whose hold action already fired
+        self.layer = False
+        self.slow = False
+        self.sys_held = set()
+        self.combo_since = None
+        self.combo_done = False
+        self.acc = [0.0, 0.0, 0.0, 0.0]
+        self.notch = [0, 0]
+
+    def norm(self, code, value):
+        lo, hi = self.ranges.get(code, (-32768, 32767))
+        if lo >= 0:  # triggers
+            return (value - lo) / max(hi - lo, 1)
+        return (value - (lo + hi) / 2) / ((hi - lo) / 2)
+
+    def release_all(self):
+        for action in self.held.values():
+            fire(action, False)
+        self.held.clear()
+        self.pending.clear()
+        self.consumed.clear()
+
+    # -- buttons
+    def button(self, name, down):
+        if menu_open():  # the menu owns the pad until it closes
+            key = MENU_KEYS.get(name)
+            if key and down:
+                kbd.write(e.EV_KEY, key, 1)
+                kbd.write(e.EV_KEY, key, 0)
+                kbd.syn()
+            return
+        if name in DEFERRED:
+            self.sys_button(name, down)
+            return
+        if down:
+            if not enabled or paused:
+                return
+            if self.layer:
+                action = binding(name, "layer")
+                self.held[name] = action
+                fire(action, True)
+            elif binding(name, "hold") != "none":
+                self.pending[name] = time.monotonic()  # tap or hold: decide on release / timeout
+            else:
+                action = binding(name, "tap")
+                self.held[name] = action
+                fire(action, True)
+        else:
+            if name in self.pending:
+                del self.pending[name]
+                if name not in self.consumed:
+                    tap(binding(name, "tap"))
+            action = self.held.pop(name, None)
+            if action:
+                fire(action, False)
+            self.consumed.discard(name)
+
+    def sys_button(self, name, down):
+        if down:
+            self.sys_held.add(name)
+            if len(self.sys_held) == 2:
+                self.combo_since = time.monotonic()
+            return
+        self.sys_held.discard(name)
+        if self.combo_since is None and enabled and not paused:
+            tap(binding(name, "layer" if self.layer else "tap"))
+        if not self.sys_held:
+            self.combo_since = None
+            self.combo_done = False
+
+    def trigger(self, left, down):
+        if left:
+            if self.layer != down:
+                self.release_all()
+            self.layer = down
+        else:
+            self.slow = down
+
+    def absolute(self, code, value):
+        if code in (e.ABS_HAT0X, e.ABS_HAT0Y):
+            for sign in (-1, 1):
+                self.button(DPAD[(code, sign)], value == sign)
+        elif code in (e.ABS_Z, e.ABS_RZ) and not self.has_tl2:
+            self.trigger(code == e.ABS_Z, self.norm(code, value) > 0.5)
+        elif code in (e.ABS_X, e.ABS_Y, e.ABS_RX, e.ABS_RY):
+            self.axes[code] = self.norm(code, value)
+
+    # -- sticks
+    def stick(self, xc, yc):
+        dz = float(cfg.get("deadzone", 0.16))
+        x, y = self.axes.get(xc, 0.0), self.axes.get(yc, 0.0)
+        mag = (x * x + y * y) ** 0.5
+        if mag < dz:
+            return 0.0, 0.0
+        scale = ((mag - dz) / (1 - dz)) ** 2 / mag
+        return x * scale, y * scale
+
+    def tick(self, now):
+        for name, t0 in list(self.pending.items()):
+            if name not in self.consumed and now - t0 >= cfg.get("hold_ms", 600) / 1000:
+                self.consumed.add(name)
+                tap(binding(name, "hold"))
+        if not enabled or paused:
+            return
+        sticks = cfg.get("sticks", {})
+        move = [0.0, 0.0]
+        scroll = [0.0, 0.0]
+        for side, (xc, yc) in (("left", (e.ABS_X, e.ABS_Y)), ("right", (e.ABS_RX, e.ABS_RY))):
+            role = sticks.get(side, "off")
+            x, y = self.stick(xc, yc)
+            if role == "mouse":
+                move = [move[0] + x, move[1] + y]
+            elif role == "scroll":
+                scroll = [scroll[0] + x, scroll[1] + y]
+        speed = float(cfg.get("mouse_speed", 1500)) * (SLOW_FACTOR if self.slow else 1) * TICK
+        sspeed = float(cfg.get("scroll_speed", 1100)) * TICK
+        self.acc[0] += move[0] * speed
+        self.acc[1] += move[1] * speed
+        self.acc[2] += scroll[0] * sspeed
+        self.acc[3] += -scroll[1] * sspeed
+        dx, dy, hx, hy = (int(v) for v in self.acc)
+        for i, v in enumerate((dx, dy, hx, hy)):
+            self.acc[i] -= v
+        if dx:
+            mouse.write(e.EV_REL, e.REL_X, dx)
+        if dy:
+            mouse.write(e.EV_REL, e.REL_Y, dy)
+        if hx:
+            mouse.write(e.EV_REL, e.REL_HWHEEL_HI_RES, hx)
+            self.wheel(0, hx, e.REL_HWHEEL)
+        if hy:
+            mouse.write(e.EV_REL, e.REL_WHEEL_HI_RES, hy)
+            self.wheel(1, hy, e.REL_WHEEL)
+        if dx or dy or hx or hy:
+            mouse.syn()
+
+    def wheel(self, i, amount, code):
+        self.notch[i] += amount
+        n = int(self.notch[i] / 120)
+        if n:
+            self.notch[i] -= n * 120
+            mouse.write(e.EV_REL, code, n)
+
+    async def run(self):
+        try:
+            async for ev in self.dev.async_read_loop():
+                if ev.type == e.EV_KEY and ev.value in (0, 1):  # ignore autorepeat
+                    name = CODE_TO_NAME.get(ev.code)
+                    if name:
+                        self.button(name, ev.value == 1)
+                    elif ev.code in (e.BTN_TL2, e.BTN_TR2):
+                        self.trigger(ev.code == e.BTN_TL2, ev.value == 1)
+                elif ev.type == e.EV_ABS:
+                    self.absolute(ev.code, ev.value)
+        except OSError:
+            pass  # controller went away
+        finally:
+            self.release_all()
+
+
+def real_pad(path):
+    try:
+        dev = InputDevice(path)
+    except OSError:
+        return None
+    caps = dev.capabilities()
+    keys = caps.get(e.EV_KEY, [])
+    absc = [c for c, _ in caps.get(e.EV_ABS, [])]
+    name = dev.name.lower()
+    if e.BTN_SOUTH not in keys or e.ABS_X not in absc:
+        return None
+    if any(x in name for x in ("touchpad", "motion", "controller-desktop")):
+        return None
+    try:  # uinput devices (e.g. Steam Input's virtual pads) would double every press
+        if "/virtual/input/" in os.path.realpath(f"/sys/class/input/{os.path.basename(path)}/device"):
+            return None
+    except OSError:
+        pass
+    return dev
+
+
+# ------------------------------------------------------------------ loops ---
+async def scan():
+    while True:
+        for path in list_devices():
+            if path in pads or path in skipped:
+                continue
+            dev = await asyncio.to_thread(real_pad, path)
+            if not dev:
+                skipped.add(path)
+                continue
+            pad = Pad(dev)
+            pads[path] = pad
+            notify(f"Connected: {dev.name}")
+            write_state()
+            task = asyncio.create_task(pad.run())
+            task.add_done_callback(lambda _t, p=path: (pads.pop(p, None), write_state()))
+        skipped.intersection_update(list_devices())
+        await asyncio.sleep(2)
+
+
+async def ticker():
+    global enabled
+    last_cfg_check = 0.0
+    while True:
+        now = time.monotonic()
+        if now - last_cfg_check > 1:
+            last_cfg_check = now
+            load_config()
+        for pad in list(pads.values()):
+            if pad.combo_since is not None and not pad.combo_done and now - pad.combo_since >= 1.0:
+                pad.combo_done = True
+                enabled = not enabled
+                pad.release_all()
+                write_state()
+                notify("Controller desktop mode " + ("ON" if enabled else "OFF"))
+            pad.tick(now)
+        await asyncio.sleep(TICK)
+
+
+def focus_is_game():
+    try:
+        out = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=1).stdout
+        win = json.loads(out) if out.strip() else {}
+    except Exception:
+        return False
+    return bool(PAUSE_CLASS.match(win.get("class", "")) or PAUSE_TITLE.search(win.get("title", "")))
+
+
+async def focus_watcher():
+    global paused
+    while True:
+        now_paused = await asyncio.to_thread(focus_is_game)
+        if now_paused != paused:
+            paused = now_paused
+            for pad in pads.values():
+                pad.release_all()
+            write_state()
+        await asyncio.sleep(0.5)
+
+
+async def main():
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    load_config()
+    write_state()
+    await asyncio.gather(scan(), ticker(), focus_watcher())
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

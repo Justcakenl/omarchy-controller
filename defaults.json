@@ -1,0 +1,103 @@
+{
+  "enabled": true,
+  "sticks": {
+    "left": "mouse",
+    "right": "scroll"
+  },
+  "mouse_speed": 1500,
+  "scroll_speed": 1100,
+  "deadzone": 0.16,
+  "hold_ms": 600,
+  "bindings": {
+    "a": {
+      "tap": "left_click",
+      "hold": "none",
+      "layer": "enter"
+    },
+    "b": {
+      "tap": "escape",
+      "hold": "close_window",
+      "layer": "close_window"
+    },
+    "x": {
+      "tap": "right_click",
+      "hold": "none",
+      "layer": "toggle_float"
+    },
+    "y": {
+      "tap": "osk",
+      "hold": "none",
+      "layer": "fullscreen"
+    },
+    "lb": {
+      "tap": "prev_workspace",
+      "hold": "none",
+      "layer": "backspace"
+    },
+    "rb": {
+      "tap": "next_workspace",
+      "hold": "none",
+      "layer": "space"
+    },
+    "l3": {
+      "tap": "tab",
+      "hold": "none",
+      "layer": "tab"
+    },
+    "r3": {
+      "tap": "middle_click",
+      "hold": "none",
+      "layer": "middle_click"
+    },
+    "start": {
+      "tap": "omarchy_menu",
+      "hold": "none",
+      "layer": "omarchy_menu"
+    },
+    "select": {
+      "tap": "next_window",
+      "hold": "none",
+      "layer": "next_window"
+    },
+    "up": {
+      "tap": "up",
+      "hold": "none",
+      "layer": "focus_up"
+    },
+    "down": {
+      "tap": "down",
+      "hold": "none",
+      "layer": "focus_down"
+    },
+    "left": {
+      "tap": "left",
+      "hold": "none",
+      "layer": "focus_left"
+    },
+    "right": {
+      "tap": "right",
+      "hold": "none",
+      "layer": "focus_right"
+    },
+    "guide": {
+      "tap": "controller_menu",
+      "hold": "none",
+      "layer": "controller_menu"
+    }
+  },
+  "custom_actions": [],
+  "menu": [
+    {
+      "label": "Browser",
+      "cmd": "omarchy-launch-browser"
+    },
+    {
+      "label": "Steam",
+      "cmd": "steam steam://open/main"
+    },
+    {
+      "label": "YouTube",
+      "cmd": "omarchy-launch-webapp https://www.youtube.com"
+    }
+  ]
+}

@@ -1,0 +1,202 @@
+{
+  "none": {
+    "label": "Nothing"
+  },
+  "left_click": {
+    "label": "Left click",
+    "mouse": "BTN_LEFT"
+  },
+  "right_click": {
+    "label": "Right click",
+    "mouse": "BTN_RIGHT"
+  },
+  "middle_click": {
+    "label": "Middle click",
+    "mouse": "BTN_MIDDLE"
+  },
+  "enter": {
+    "label": "Enter",
+    "keys": [
+      "ENTER"
+    ]
+  },
+  "escape": {
+    "label": "Escape",
+    "keys": [
+      "ESC"
+    ]
+  },
+  "tab": {
+    "label": "Tab",
+    "keys": [
+      "TAB"
+    ]
+  },
+  "backspace": {
+    "label": "Backspace",
+    "keys": [
+      "BACKSPACE"
+    ]
+  },
+  "space": {
+    "label": "Space",
+    "keys": [
+      "SPACE"
+    ]
+  },
+  "up": {
+    "label": "Arrow up",
+    "keys": [
+      "UP"
+    ]
+  },
+  "down": {
+    "label": "Arrow down",
+    "keys": [
+      "DOWN"
+    ]
+  },
+  "left": {
+    "label": "Arrow left",
+    "keys": [
+      "LEFT"
+    ]
+  },
+  "right": {
+    "label": "Arrow right",
+    "keys": [
+      "RIGHT"
+    ]
+  },
+  "page_up": {
+    "label": "Page up",
+    "keys": [
+      "PAGEUP"
+    ]
+  },
+  "page_down": {
+    "label": "Page down",
+    "keys": [
+      "PAGEDOWN"
+    ]
+  },
+  "close_window": {
+    "label": "Close window",
+    "keys": [
+      "LEFTMETA",
+      "W"
+    ]
+  },
+  "toggle_float": {
+    "label": "Float / tile",
+    "keys": [
+      "LEFTMETA",
+      "T"
+    ]
+  },
+  "fullscreen": {
+    "label": "Fullscreen",
+    "keys": [
+      "LEFTMETA",
+      "F"
+    ]
+  },
+  "focus_left": {
+    "label": "Focus window left",
+    "keys": [
+      "LEFTMETA",
+      "LEFT"
+    ]
+  },
+  "focus_right": {
+    "label": "Focus window right",
+    "keys": [
+      "LEFTMETA",
+      "RIGHT"
+    ]
+  },
+  "focus_up": {
+    "label": "Focus window up",
+    "keys": [
+      "LEFTMETA",
+      "UP"
+    ]
+  },
+  "focus_down": {
+    "label": "Focus window down",
+    "keys": [
+      "LEFTMETA",
+      "DOWN"
+    ]
+  },
+  "next_window": {
+    "label": "Next window (Alt+Tab)",
+    "keys": [
+      "LEFTALT",
+      "TAB"
+    ]
+  },
+  "next_workspace": {
+    "label": "Next workspace",
+    "keys": [
+      "LEFTMETA",
+      "TAB"
+    ]
+  },
+  "prev_workspace": {
+    "label": "Previous workspace",
+    "keys": [
+      "LEFTMETA",
+      "LEFTSHIFT",
+      "TAB"
+    ]
+  },
+  "omarchy_menu": {
+    "label": "Omarchy menu",
+    "keys": [
+      "LEFTMETA",
+      "SPACE"
+    ]
+  },
+  "terminal": {
+    "label": "Terminal",
+    "keys": [
+      "LEFTMETA",
+      "ENTER"
+    ]
+  },
+  "screenshot": {
+    "label": "Screenshot",
+    "keys": [
+      "SYSRQ"
+    ]
+  },
+  "volume_up": {
+    "label": "Volume up",
+    "keys": [
+      "VOLUMEUP"
+    ]
+  },
+  "volume_down": {
+    "label": "Volume down",
+    "keys": [
+      "VOLUMEDOWN"
+    ]
+  },
+  "mute": {
+    "label": "Mute",
+    "keys": [
+      "MUTE"
+    ]
+  },
+  "osk": {
+    "label": "On-screen keyboard",
+    "run": [
+      "{here}/osk-toggle"
+    ]
+  },
+  "controller_menu": {
+    "label": "Controller menu",
+    "menu": true
+  }
+}
